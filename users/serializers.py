@@ -3,6 +3,7 @@ from django.contrib.auth.password_validation import validate_password
 from .models import User
 from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+from .constants import ERROR_MESSAGES
 
 User = get_user_model()
 
@@ -22,26 +23,22 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
             # First try to get the user by email
             try:
                 user = User.objects.get(email=email)
-                print(f"Found user: {user.email}, is_active: {user.is_active}")
                 
                 # Check if password is correct
                 if not user.check_password(password):
-                    print(f"Invalid password for user: {user.email}")
                     raise serializers.ValidationError({
-                        'detail': 'Invalid email or password'
+                        'detail': ERROR_MESSAGES['INVALID_CREDENTIALS']
                     })
                 
             except User.DoesNotExist:
-                print(f"User not found with email: {email}")
                 raise serializers.ValidationError({
-                    'detail': 'Invalid email or password'
+                    'detail': ERROR_MESSAGES['INVALID_CREDENTIALS']
                 })
             
             # Check if user is active
             if not user.is_active:
-                print(f"User account not active: {user.email}")
                 raise serializers.ValidationError({
-                    'detail': 'Your account is not active. Please contact support.'
+                    'detail': ERROR_MESSAGES['ACCOUNT_INACTIVE']
                 })
             
             # If all checks pass, proceed with token generation
@@ -51,10 +48,8 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
                 data = super().validate(attrs)
                 data['email'] = self.user.email
                 data['username'] = self.user.username
-                print(f"Successfully generated token for user: {self.user.email}")
                 return data
             except Exception as e:
-                print(f"Error generating token: {str(e)}")
                 raise serializers.ValidationError({
                     'detail': f'Error generating token: {str(e)}'
                 })
@@ -62,7 +57,6 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         except serializers.ValidationError:
             raise
         except Exception as e:
-            print(f"Unexpected error in validate: {str(e)}")
             raise serializers.ValidationError({
                 'detail': f'Authentication failed: {str(e)}'
             })
@@ -82,7 +76,7 @@ class UserSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         if attrs['password'] != attrs.pop('password2'):
-            raise serializers.ValidationError({"password": "Password fields didn't match."})
+            raise serializers.ValidationError({"password": ERROR_MESSAGES['PASSWORD_MISMATCH']})
         return attrs
 
     def create(self, validated_data):
@@ -97,10 +91,24 @@ class UserSerializer(serializers.ModelSerializer):
         return user
 
 class UserUpdateSerializer(serializers.ModelSerializer):
+    profile_pic = serializers.ImageField(required=False, allow_null=True)
+    
     class Meta:
         model = User
         fields = ('username', 'email', 'profile_pic')
         read_only_fields = ('email',)
+
+    def update(self, instance, validated_data):
+        # Handle profile pic update
+        if 'profile_pic' in validated_data:
+            # Delete old profile pic if it exists
+            if instance.profile_pic:
+                instance.profile_pic.delete(save=False)
+            
+        instance.username = validated_data.get('username', instance.username)
+        instance.profile_pic = validated_data.get('profile_pic', instance.profile_pic)
+        instance.save()
+        return instance
 
 class OTPRequestSerializer(serializers.Serializer):
     email = serializers.EmailField()
@@ -108,7 +116,7 @@ class OTPRequestSerializer(serializers.Serializer):
     def validate_email(self, value):
         # Check if email already exists
         if User.objects.filter(email=value).exists():
-            raise serializers.ValidationError("Email already registered")
+            raise serializers.ValidationError(ERROR_MESSAGES['EMAIL_EXISTS'])
         return value
 
 class UserRegistrationSerializer(serializers.ModelSerializer):
@@ -124,7 +132,7 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
 
     def validate(self, data):
         if data['password'] != data['password2']:
-            raise serializers.ValidationError({'password': 'Passwords must match.'})
+            raise serializers.ValidationError({'password': ERROR_MESSAGES['PASSWORD_MISMATCH']})
         return data
 
     def create(self, validated_data):
@@ -138,4 +146,46 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
             password=validated_data['password'],
             is_active=True,
         )
+        return user
+
+class ForgotPasswordRequestSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+
+    def validate_email(self, value):
+        # Check if email exists
+        if not User.objects.filter(email=value).exists():
+            raise serializers.ValidationError("No account found with this email address")
+        return value
+
+class ResetPasswordSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    otp = serializers.CharField()
+    new_password = serializers.CharField(validators=[validate_password])
+    confirm_password = serializers.CharField()
+
+    def validate(self, data):
+        if data['new_password'] != data['confirm_password']:
+            raise serializers.ValidationError({'password': ERROR_MESSAGES['PASSWORD_MISMATCH']})
+        return data
+
+class ChangePasswordSerializer(serializers.Serializer):
+    old_password = serializers.CharField()
+    new_password = serializers.CharField(validators=[validate_password])
+    confirm_password = serializers.CharField()
+
+    def validate_old_password(self, value):
+        user = self.context['request'].user
+        if not user.check_password(value):
+            raise serializers.ValidationError("Current password is incorrect")
+        return value
+
+    def validate(self, data):
+        if data['new_password'] != data['confirm_password']:
+            raise serializers.ValidationError({'password': ERROR_MESSAGES['PASSWORD_MISMATCH']})
+        return data
+
+    def save(self):
+        user = self.context['request'].user
+        user.set_password(self.validated_data['new_password'])
+        user.save()
         return user 
