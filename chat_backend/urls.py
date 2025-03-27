@@ -16,13 +16,13 @@ schema_view = get_schema_view(
         
         ## Authentication
         The API uses JWT (JSON Web Token) for authentication. To use authenticated endpoints:
-        1. Login using the `/api/users/token/` endpoint
+        1. Login using the `/api/v1/users/token/` endpoint
         2. Copy the access token from the response
         3. Add it to the Authorization header as 'Bearer <token>'
         
         ## Endpoints
-        - `/api/users/`: User management endpoints
-        - `/api/chat/`: Chat functionality endpoints
+        - `/api/v1/users/`: User management endpoints
+        - `/api/v1/chat/`: Chat functionality endpoints
         """,
         terms_of_service="https://www.google.com/policies/terms/",
         contact=openapi.Contact(email="contact@chat.local"),
@@ -31,15 +31,15 @@ schema_view = get_schema_view(
     public=True,
     permission_classes=(permissions.AllowAny,),
     patterns=[
-        path('api/users/', include('users.urls')),
-        path('api/chat/', include('chat.urls')),
+        path('api/v1/users/', include('users.urls')),
+        path('api/v1/chat/', include('chat.urls')),
     ],
 )
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-    path('api/users/', include('users.urls')),
-    path('api/chat/', include('chat.urls')),
+    path('api/v1/users/', include('users.urls')),
+    path('api/v1/chat/', include('chat.urls')),
     
     # Swagger URLs
     path('swagger<format>/', schema_view.without_ui(cache_timeout=0), name='schema-json'),
