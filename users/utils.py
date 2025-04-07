@@ -11,6 +11,15 @@ from .constants import (
 # Initialize Redis connection
 redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB)
 
+def set_user_online(user_id):
+    redis_client.set(f'user:{user_id}:online', 'true', ex=300)  # 5 minute timeout
+
+def set_user_offline(user_id):
+    redis_client.delete(f'user:{user_id}:online')
+
+def is_user_online(user_id):
+    return redis_client.exists(f'user:{user_id}:online') == 1
+
 def send_otp_email(email, otp):
     """Send OTP via email."""
     message = EMAIL_MESSAGE_TEMPLATE.format(otp=otp)
@@ -44,3 +53,5 @@ def verify_otp(email, provided_otp):
         return False, ERROR_MESSAGES['INVALID_OTP']
     
     return True, None 
+
+

@@ -4,6 +4,7 @@ from .models import User
 from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from .constants import ERROR_MESSAGES
+from .utils import is_user_online 
 
 User = get_user_model()
 
@@ -69,15 +70,20 @@ class UserSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=True, validators=[validate_password])
     password2 = serializers.CharField(write_only=True, required=True)
 
+    is_online = serializers.SerializerMethodField()
+
     class Meta:
         model = User
-        fields = ('id', 'username', 'email', 'password', 'password2', 'profile_pic', 'status', 'last_seen', 'created_at')
-        read_only_fields = ('status', 'last_seen', 'created_at')
+        fields = ('id', 'username', 'email', 'password', 'password2', 'profile_pic', 'status', 'last_seen', 'created_at', 'is_online')
+        read_only_fields = ('status', 'last_seen', 'created_at', 'is_online')
 
     def validate(self, attrs):
         if attrs['password'] != attrs.pop('password2'):
             raise serializers.ValidationError({"password": ERROR_MESSAGES['PASSWORD_MISMATCH']})
         return attrs
+    
+    def get_is_online(self, obj):
+        return is_user_online(obj.id)
 
     def create(self, validated_data):
         user = User.objects.create_user(

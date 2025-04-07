@@ -2,44 +2,66 @@ from django.shortcuts import render
 from rest_framework import generics, status, viewsets
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
-from django.db.models import Q
-from .models import ChatRoom, Message, Membership
+from django.db.models import Q, Prefetch
+from rest_framework.throttling import ScopedRateThrottle
+from django_filters.rest_framework import DjangoFilterBackend
+from .models import ChatRoom, Message, Membership, Reaction
 from .serializers import (
     ChatRoomSerializer,
     ChatRoomCreateSerializer,
     MessageSerializer,
     MembershipSerializer,
+    ReactionSerializer,
 )
-from django.core.mail import send_mail
-from django.conf import settings
-from django.utils import timezone
-import random
 import redis
 from rest_framework import serializers
 from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
+from functools import wraps
+import pickle
+from rest_framework.filters import SearchFilter
+import django_filters
 
 # Initialize Redis connection
 redis_client = redis.Redis(host='localhost', port=6379, db=0)
 OTP_EXPIRY_TIME = 300  # 5 minutes in seconds
 
-# Create your views here.
+
+class ChatRoomFilter(django_filters.FilterSet):
+    name = django_filters.CharFilter(lookup_expr='icontains')
+    type = django_filters.CharFilter()
+    
+    class Meta:
+        model = ChatRoom
+        fields = ['name', 'type']
 
 class ChatRoomListCreateView(generics.ListCreateAPIView):
     """
     List all chat rooms for the authenticated user or create a new chat room.
     """
     permission_classes = (IsAuthenticated,)
+    filter_backends = [DjangoFilterBackend]
+    filterset_class = ChatRoomFilter
     
     def get_serializer_class(self):
         if self.request.method == 'POST':
             return ChatRoomCreateSerializer
         return ChatRoomSerializer
-
+    
     def get_queryset(self):
-        return ChatRoom.objects.filter(
+        queryset = ChatRoom.objects.filter(
             members=self.request.user
+        ).prefetch_related(
+            Prefetch('messages', 
+                    queryset=Message.objects.order_by('-timestamp'),
+                    to_attr='prefetched_messages')
         ).order_by('-created_at')
+        
+        # Annotate with last message for each room
+        for room in queryset:
+            if hasattr(room, 'prefetched_messages') and room.prefetched_messages:
+                room.prefetched_last_message = room.prefetched_messages[0]
+        return queryset
 
     @swagger_auto_schema(
         operation_description="Create a new chat room",
@@ -62,19 +84,44 @@ class ChatRoomDetailView(generics.RetrieveAPIView):
     def get_queryset(self):
         return ChatRoom.objects.filter(members=self.request.user)
 
+def cache_messages(timeout=300):
+    def decorator(view_func):
+        @wraps(view_func)
+        def wrapped_view(self, request, *args, **kwargs):
+            cache_key = f'messages:{kwargs.get("room_id")}:{request.user.id}'
+            cached_data = redis_client.get(cache_key)
+            
+            if cached_data:
+                return Response(pickle.loads(cached_data))
+            
+            response = view_func(self, request, *args, **kwargs)
+            
+            if response.status_code == 200:
+                redis_client.setex(cache_key, timeout, pickle.dumps(response.data))
+            
+            return response
+        return wrapped_view
+    return decorator
+
 class MessageListView(generics.ListCreateAPIView):
     """
     List all messages in a chat room or create a new message.
     """
     permission_classes = (IsAuthenticated,)
     serializer_class = MessageSerializer
-
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'message_create'
+    filter_backends = [SearchFilter]
+    search_filters = ['content']
+    
     def get_queryset(self):
-        room_id = self.kwargs['room_id']
         return Message.objects.filter(
-            room_id=room_id,
+            room_id=self.kwargs['room_id'],
             room__members=self.request.user
+        ).select_related(
+            'sender', 'room'
         ).order_by('-timestamp')
+
 
     def perform_create(self, serializer):
         room_id = self.kwargs['room_id']
@@ -82,7 +129,12 @@ class MessageListView(generics.ListCreateAPIView):
             room = ChatRoom.objects.get(id=room_id, members=self.request.user)
             serializer.save(sender=self.request.user, room=room)
         except ChatRoom.DoesNotExist:
-            raise PermissionError("You don't have access to this chat room")
+            raise serializers.ValidationError("You don't have access to this chat room")
+
+    @cache_messages(timeout=60)
+    def list(self, request, *args, **kwargs):
+        return super().list(request, *args, **kwargs)
+
 
     @swagger_auto_schema(
         operation_description="Create a new message in the chat room",
@@ -102,13 +154,12 @@ class MembershipViewSet(viewsets.ModelViewSet):
     """
     permission_classes = (IsAuthenticated,)
     serializer_class = MembershipSerializer
-
+    
     def get_queryset(self):
-        room_id = self.kwargs['room_id']
         return Membership.objects.filter(
-            room_id=room_id,
+            room_id=self.kwargs['room_id'],
             room__members=self.request.user
-        )
+        ).select_related('user', 'room')
 
     def perform_create(self, serializer):
         room_id = self.kwargs['room_id']
@@ -120,7 +171,7 @@ class MembershipViewSet(viewsets.ModelViewSet):
                 user=self.request.user,
                 role='admin'
             ).exists():
-                raise PermissionError("Only admins can add members")
+                raise serializers.ValidationError("Only admins can add members")
             
             # Get user_id from validated data
             user_id = serializer.validated_data.get('user_id')
@@ -137,7 +188,7 @@ class MembershipViewSet(viewsets.ModelViewSet):
             serializer.save(room=room)
             
         except ChatRoom.DoesNotExist:
-            raise PermissionError("Chat room not found")
+            raise serializers.ValidationError("Chat room not found")
 
     @swagger_auto_schema(
         operation_description="Remove yourself from the chat room",
@@ -277,11 +328,13 @@ class DirectChatView(generics.GenericAPIView):
         try:
             # Check if direct chat already exists
             existing_chat = ChatRoom.objects.filter(
-                type='direct',
+                type='direct'
+            ).filter(
                 members=request.user
             ).filter(
-                members=user_id
+                members__id=user_id
             ).first()
+
 
             if existing_chat:
                 serializer = self.get_serializer(existing_chat)
@@ -300,3 +353,36 @@ class DirectChatView(generics.GenericAPIView):
                 {'detail': str(e)},
                 status=status.HTTP_400_BAD_REQUEST
             )
+
+class MarkMessagesReadView(generics.GenericAPIView):
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request, room_id):
+        messages = Message.objects.filter(
+            room_id=room_id
+        ).exclude(
+            sender=request.user
+        ).exclude(
+            read_by=request.user
+        )
+        
+        count = messages.count()
+        for message in messages:
+            message.read_by.add(request.user)
+        
+        return Response({
+            'status': 'success',
+            'messages_marked_read': count
+        })
+    
+class ReactionViewSet(viewsets.ModelViewSet):
+    serializer_class = ReactionSerializer
+    permission_classes = [IsAuthenticated]
+    
+    def get_queryset(self):
+        return Reaction.objects.filter(
+            message__room__members=self.request.user
+        )
+    
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
