@@ -1,11 +1,15 @@
-from django.shortcuts import render
+from django.shortcuts import render, get_object_or_404
 from rest_framework import generics, status, viewsets
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
-from django.db.models import Q, Prefetch
+from .permissions import IsMessageOwner
+from django.db.models import Q, Prefetch, Max
+from django.db import transaction
 from rest_framework.throttling import ScopedRateThrottle
 from django_filters.rest_framework import DjangoFilterBackend
 from .models import ChatRoom, Message, Membership, Reaction
+from users.models import User
 from .serializers import (
     ChatRoomSerializer,
     ChatRoomCreateSerializer,
@@ -13,19 +17,29 @@ from .serializers import (
     MembershipSerializer,
     ReactionSerializer,
 )
+from users.serializers import UserSerializer
 import redis
 from rest_framework import serializers
+from rest_framework.exceptions import PermissionDenied
 from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
 from functools import wraps
 import pickle
 from rest_framework.filters import SearchFilter
+from rest_framework.decorators import action
 import django_filters
+from django.db.models import Prefetch, Count
+from rest_framework.pagination import PageNumberPagination, CursorPagination
+
+
 
 # Initialize Redis connection
 redis_client = redis.Redis(host='localhost', port=6379, db=0)
 OTP_EXPIRY_TIME = 300  # 5 minutes in seconds
 
+class ChatRoomPagination(PageNumberPagination):
+    page_size = 20
+    page_size_query_param = 'page_size'
 
 class ChatRoomFilter(django_filters.FilterSet):
     name = django_filters.CharFilter(lookup_expr='icontains')
@@ -36,32 +50,28 @@ class ChatRoomFilter(django_filters.FilterSet):
         fields = ['name', 'type']
 
 class ChatRoomListCreateView(generics.ListCreateAPIView):
-    """
-    List all chat rooms for the authenticated user or create a new chat room.
-    """
-    permission_classes = (IsAuthenticated,)
-    filter_backends = [DjangoFilterBackend]
+    permission_classes = [IsAuthenticated]
+    pagination_class = ChatRoomPagination
+    filter_backends = [DjangoFilterBackend, SearchFilter]
     filterset_class = ChatRoomFilter
+    search_fields = ['name', 'members__username']
     
     def get_serializer_class(self):
-        if self.request.method == 'POST':
-            return ChatRoomCreateSerializer
-        return ChatRoomSerializer
+        return ChatRoomCreateSerializer if self.request.method == 'POST' else ChatRoomSerializer
     
     def get_queryset(self):
-        queryset = ChatRoom.objects.filter(
+        return ChatRoom.objects.filter(
             members=self.request.user
         ).prefetch_related(
-            Prefetch('messages', 
-                    queryset=Message.objects.order_by('-timestamp'),
-                    to_attr='prefetched_messages')
-        ).order_by('-created_at')
-        
-        # Annotate with last message for each room
-        for room in queryset:
-            if hasattr(room, 'prefetched_messages') and room.prefetched_messages:
-                room.prefetched_last_message = room.prefetched_messages[0]
-        return queryset
+            Prefetch('memberships', queryset=Membership.objects.select_related('user')),
+            Prefetch('messages', queryset=Message.objects.order_by('-timestamp')[:1], 
+                    to_attr='prefetched_last_message')
+        ).annotate(
+            unread_count=Count('messages', 
+                             filter=~Q(messages__read_by=self.request.user) & 
+                             ~Q(messages__sender=self.request.user))
+        ).order_by('-memberships__joined_at')
+
 
     @swagger_auto_schema(
         operation_description="Create a new chat room",
@@ -71,8 +81,56 @@ class ChatRoomListCreateView(generics.ListCreateAPIView):
             400: "Bad Request"
         }
     )
+
     def create(self, request, *args, **kwargs):
+        """Handle both group and direct chat creation"""
+        if request.data.get('type') == 'direct':
+            return self._create_direct_chat(request)
         return super().create(request, *args, **kwargs)
+    
+    def _create_direct_chat(self, request):
+        """Special handling for direct chats"""
+        other_user_id = request.data.get('members', [])
+        if len(other_user_id) != 1:
+            return Response(
+                {"error": "Direct chats require exactly one other user"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            other_user = User.objects.get(id=other_user_id[0])
+        except User.DoesNotExist:
+            return Response(
+                {"error": "User not found"}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # Check for existing direct chat
+        existing_chat = ChatRoom.objects.filter(
+            type='direct',
+            members=request.user
+        ).filter(
+            members=other_user
+        ).first()
+
+        if existing_chat:
+            return Response(
+                ChatRoomSerializer(existing_chat, context={'request': request}).data,
+                status=status.HTTP_200_OK
+            )
+
+        # Create new direct chat
+        with transaction.atomic():
+            chat = ChatRoom.objects.create(type='direct')
+            Membership.objects.bulk_create([
+                Membership(user=request.user, room=chat, role='admin'),
+                Membership(user=other_user, room=chat, role='admin')
+            ])
+
+        return Response(
+            ChatRoomSerializer(chat, context={'request': request}).data,
+            status=status.HTTP_201_CREATED
+        )
 
 class ChatRoomDetailView(generics.RetrieveAPIView):
     """
@@ -103,38 +161,63 @@ def cache_messages(timeout=300):
         return wrapped_view
     return decorator
 
+class MessageCursorPagination(CursorPagination):
+    page_size = 50
+    ordering = '-timestamp'
+    cursor_query_param = 'before'
+
 class MessageListView(generics.ListCreateAPIView):
-    """
-    List all messages in a chat room or create a new message.
-    """
-    permission_classes = (IsAuthenticated,)
+    permission_classes = [IsAuthenticated]
     serializer_class = MessageSerializer
+    pagination_class = MessageCursorPagination
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = 'message_create'
-    filter_backends = [SearchFilter]
-    search_filters = ['content']
+
     
     def get_queryset(self):
         return Message.objects.filter(
             room_id=self.kwargs['room_id'],
-            room__members=self.request.user
+            room__members=self.request.user,
+            deleted_at__isnull=True
         ).select_related(
             'sender', 'room'
+        ).prefetch_related(
+            Prefetch('reactions', queryset=Reaction.objects.select_related('user'))
         ).order_by('-timestamp')
 
 
     def perform_create(self, serializer):
-        room_id = self.kwargs['room_id']
-        try:
-            room = ChatRoom.objects.get(id=room_id, members=self.request.user)
-            serializer.save(sender=self.request.user, room=room)
-        except ChatRoom.DoesNotExist:
-            raise serializers.ValidationError("You don't have access to this chat room")
+        room = get_object_or_404(
+            ChatRoom.objects.filter(members=self.request.user),
+            pk=self.kwargs['room_id']
+        )
+        
+        message = serializer.save(
+            sender=self.request.user,
+            room=room,
+            status='delivered'  # Assume immediate delivery
+        )
 
-    @cache_messages(timeout=60)
+        # Trigger real-time update (we'll implement this later)
+        self._notify_new_message(message)
+
+    def _notify_new_message(self, message):
+        """Placeholder for WebSocket/Webhook integration"""
+        pass
+
     def list(self, request, *args, **kwargs):
-        return super().list(request, *args, **kwargs)
-
+        response = super().list(request, *args, **kwargs)
+        
+        # Mark messages as read when fetched
+        if response.data:
+            Message.objects.filter(
+                room_id=self.kwargs['room_id'],
+                read_by=self.request.user
+            ).exclude(
+                read_by=self.request.user
+            ).update(status='seen')
+        
+        return response
 
     @swagger_auto_schema(
         operation_description="Create a new message in the chat room",
@@ -145,214 +228,190 @@ class MessageListView(generics.ListCreateAPIView):
             403: "Forbidden"
         }
     )
+    
     def create(self, request, *args, **kwargs):
         return super().create(request, *args, **kwargs)
 
+class MessageDetailView(generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [IsAuthenticated, IsMessageOwner]
+    serializer_class = MessageSerializer
+    lookup_url_kwarg = 'message_id'
+
+    def get_queryset(self):
+        return Message.objects.filter(
+            room__members=self.request.user,
+            deleted_at__isnull=True
+        )
+
+    def perform_destroy(self, instance):
+        """Soft delete by default"""
+        instance.delete(soft_delete=True)
+
+    def perform_update(self, serializer):
+        """Prevent editing deleted messages"""
+        if serializer.instance.deleted_at:
+            raise PermissionDenied("Cannot edit deleted messages")
+        serializer.save()
+
 class MembershipViewSet(viewsets.ModelViewSet):
-    """
-    ViewSet for managing chat room memberships.
-    """
-    permission_classes = (IsAuthenticated,)
+    permission_classes = [IsAuthenticated]
     serializer_class = MembershipSerializer
-    
+
     def get_queryset(self):
         return Membership.objects.filter(
             room_id=self.kwargs['room_id'],
             room__members=self.request.user
         ).select_related('user', 'room')
+    
+    def create(self, request, *args, **kwargs):
+        """Only admins can add members"""
+        room = get_object_or_404(
+            ChatRoom.objects.filter(members=request.user),
+            pk=self.kwargs['room_id']
+        )
+        
+        if not request.user.memberships.filter(
+            room=room, 
+            role='admin'
+        ).exists():
+            return Response(
+                {"error": "Only admins can add members"},
+                status=status.HTTP_403_FORBIDDEN
+            )
 
-    def perform_create(self, serializer):
-        room_id = self.kwargs['room_id']
-        try:
-            room = ChatRoom.objects.get(id=room_id)
-            # Check if the user is an admin
-            if not Membership.objects.filter(
-                room=room,
-                user=self.request.user,
-                role='admin'
-            ).exists():
-                raise serializers.ValidationError("Only admins can add members")
-            
-            # Get user_id from validated data
-            user_id = serializer.validated_data.get('user_id')
-            if not user_id:
-                raise serializers.ValidationError("user_id is required")
-            
-            # Check if user is already a member
-            if Membership.objects.filter(
-                room=room,
-                user_id=user_id
-            ).exists():
-                raise serializers.ValidationError("User is already a member of this room")
-                
-            serializer.save(room=room)
-            
-        except ChatRoom.DoesNotExist:
-            raise serializers.ValidationError("Chat room not found")
-
-    @swagger_auto_schema(
-        operation_description="Remove yourself from the chat room",
-        responses={
-            200: "Successfully removed",
-            400: "Bad Request",
-            404: "Not Found"
-        }
-    )
+        return super().create(request, *args, **kwargs)
+    
+    @action(detail=False, methods=['delete'])
     def remove_self(self, request, room_id):
-        try:
-            room = ChatRoom.objects.get(id=room_id)
-            membership = Membership.objects.get(room=room, user=request.user)
-            
-            # If user is an admin, check if they're the last admin
-            if membership.role == 'admin':
-                admin_count = Membership.objects.filter(
-                    room=room,
-                    role='admin'
-                ).count()
-                if admin_count <= 1:
-                    # If they're the last admin, delete the entire room
-                    room.delete()
-                    return Response(
-                        {"detail": "Successfully removed yourself and deleted the room"},
-                        status=status.HTTP_200_OK
-                    )
-            
-            # If not the last admin or not an admin, just remove the membership
-            membership.delete()
-            return Response(
-                {"detail": "Successfully removed yourself from the room"},
-                status=status.HTTP_200_OK
+        """Leave a chat room"""
+        with transaction.atomic():
+            membership = get_object_or_404(
+                Membership.objects.select_for_update(),
+                room_id=room_id,
+                user=request.user
             )
             
-        except ChatRoom.DoesNotExist:
-            return Response(
-                {"error": "Chat room not found"},
-                status=status.HTTP_404_NOT_FOUND
-            )
-        except Membership.DoesNotExist:
-            return Response(
-                {"error": "You are not a member of this room"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-    @swagger_auto_schema(
-        operation_description="Remove another member from the chat room (admin only)",
-        manual_parameters=[
-            openapi.Parameter(
-                'user_id',
-                openapi.IN_PATH,
-                description="ID of the user to remove",
-                type=openapi.TYPE_INTEGER,
-                required=True
-            )
-        ],
-        responses={
-            200: "Successfully removed",
-            400: "Bad Request",
-            403: "Forbidden",
-            404: "Not Found"
-        }
-    )
-    def remove_member(self, request, room_id, user_id):
-        try:
-            room = ChatRoom.objects.get(id=room_id)
-            
-            # Check if requester is admin
-            if not Membership.objects.filter(
-                room=room,
-                user=request.user,
-                role='admin'
-            ).exists():
+            if membership.role == 'admin' and \
+               Membership.objects.filter(
+                   room_id=room_id, 
+                   role='admin'
+               ).count() <= 1:
+                membership.room.delete()
                 return Response(
-                    {"warning": "Only admins can remove other members from the room"},
-                    status=status.HTTP_403_FORBIDDEN
+                    {"detail": "Room deleted as you were the last admin"},
+                    status=status.HTTP_200_OK
                 )
             
-            # Get the membership to be removed
-            membership = Membership.objects.get(room=room, user_id=user_id)
-            
-            # Prevent removing the last admin
-            if membership.role == 'admin':
-                admin_count = Membership.objects.filter(
-                    room=room,
-                    role='admin'
-                ).count()
-                if admin_count <= 1:
-                    return Response(
-                        {"warning": "Cannot remove the last admin from the room"},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-            
             membership.delete()
             return Response(
-                {"detail": "Successfully removed member from the room"},
+                {"detail": "Successfully left the room"},
                 status=status.HTTP_200_OK
             )
-            
-        except ChatRoom.DoesNotExist:
-            return Response(
-                {"error": "Chat room not found"},
-                status=status.HTTP_404_NOT_FOUND
-            )
-        except Membership.DoesNotExist:
-            return Response(
-                {"error": "User is not a member of this room"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+
+class UserSearchView(generics.ListAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = UserSerializer  # Basic user serializer
+
+    def get_queryset(self):
+        search_term = self.request.query_params.get('q', '').strip()
+        if not search_term:
+            return User.objects.none()
+        
+        return User.objects.filter(
+            Q(username__icontains=search_term) |
+            Q(email__icontains=search_term)
+        ).exclude(id=self.request.user.id)  # Exclude self
 
 class DirectChatView(generics.GenericAPIView):
-    """
-    Create or retrieve a direct chat with another user.
-    """
-    permission_classes = (IsAuthenticated,)
+    permission_classes = [IsAuthenticated]
     serializer_class = ChatRoomSerializer
 
     @swagger_auto_schema(
-        operation_description="Create or retrieve a direct chat with another user",
-        manual_parameters=[
-            openapi.Parameter(
-                'user_id',
-                openapi.IN_PATH,
-                description="ID of the user to start/retrieve direct chat with",
-                type=openapi.TYPE_INTEGER,
-                required=True
-            )
-        ],
+        operation_description="Create or retrieve a direct chat using user ID, username, or email",
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            properties={
+                'user_id': openapi.Schema(type=openapi.TYPE_INTEGER, description='User ID'),
+                'username': openapi.Schema(type=openapi.TYPE_STRING, description='Username'),
+                'email': openapi.Schema(type=openapi.TYPE_STRING, description='Email'),
+            },
+            required=[],
+            example={"username": "john_doe"}
+        ),
         responses={
             200: ChatRoomSerializer,
             201: ChatRoomSerializer,
-            400: "Bad Request"
+            400: "Bad Request",
+            404: "User not found"
         }
     )
-    def post(self, request, user_id):
-        try:
-            # Check if direct chat already exists
-            existing_chat = ChatRoom.objects.filter(
-                type='direct'
-            ).filter(
-                members=request.user
-            ).filter(
-                members__id=user_id
-            ).first()
+    def post(self, request):
+        # Get identifier from request (supports multiple ways)
+        user_id = request.data.get('user_id')
+        username = request.data.get('username')
+        email = request.data.get('email')
 
-
-            if existing_chat:
-                serializer = self.get_serializer(existing_chat)
-                return Response(serializer.data)
-
-            # Create new direct chat
-            chat_room = ChatRoom.objects.create(type='direct')
-            Membership.objects.create(user=request.user, room=chat_room, role='admin')
-            Membership.objects.create(user_id=user_id, room=chat_room, role='admin')
-
-            serializer = self.get_serializer(chat_room)
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
-
-        except Exception as e:
+        # Validate input
+        identifiers = [i for i in [user_id, username, email] if i is not None]
+        if len(identifiers) != 1:
             return Response(
-                {'detail': str(e)},
+                {"error": "Provide exactly one identifier (user_id, username, or email)"},
                 status=status.HTTP_400_BAD_REQUEST
             )
+
+        # Find user
+        try:
+            if user_id:
+                user = User.objects.get(id=user_id)
+            elif username:
+                user = User.objects.get(username__iexact=username)
+            else:
+                user = User.objects.get(email__iexact=email)
+        except User.DoesNotExist:
+            return Response(
+                {"error": "User not found"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except User.MultipleObjectsReturned:
+            return Response(
+                {"error": "Multiple users found. Please use a more specific identifier"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Prevent self-chat
+        if user == request.user:
+            return Response(
+                {"error": "Cannot create direct chat with yourself"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Check for existing chat
+        existing_chat = ChatRoom.objects.filter(
+            type='direct',
+            members=request.user
+        ).filter(
+            members=user
+        ).first()
+
+        if existing_chat:
+            return Response(
+                self.get_serializer(existing_chat).data,
+                status=status.HTTP_200_OK
+            )
+
+        # Create new chat
+        with transaction.atomic():
+            chat_room = ChatRoom.objects.create(type='direct')
+            Membership.objects.bulk_create([
+                Membership(user=request.user, room=chat_room, role='admin'),
+                Membership(user=user, room=chat_room, role='admin')
+            ])
+
+        return Response(
+            self.get_serializer(chat_room).data,
+            status=status.HTTP_201_CREATED
+        )
+
 
 class MarkMessagesReadView(generics.GenericAPIView):
     permission_classes = [IsAuthenticated]
@@ -378,11 +437,17 @@ class MarkMessagesReadView(generics.GenericAPIView):
 class ReactionViewSet(viewsets.ModelViewSet):
     serializer_class = ReactionSerializer
     permission_classes = [IsAuthenticated]
-    
+
     def get_queryset(self):
         return Reaction.objects.filter(
+            message_id=self.kwargs['message_id'],
             message__room__members=self.request.user
         )
-    
-    def perform_create(self, serializer):
-        serializer.save(user=self.request.user)
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context['message'] = get_object_or_404(
+            Message.objects.filter(room__members=self.request.user),
+            pk=self.kwargs['message_id']
+        )
+        return context
