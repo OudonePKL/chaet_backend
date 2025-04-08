@@ -44,20 +44,15 @@ class ChatRoomSerializer(serializers.ModelSerializer):
             }
         return None
 
-    def get_last_message(self, obj: ChatRoom):
-        last_message = getattr(obj, 'prefetched_last_message', None)
-        if not last_message:
-            last_message = obj.messages.order_by('-timestamp').first()
-
-        print(last_message)
-        
-        # if last_message:
-        #     return {
-        #         'id': last_message.id,
-        #         'content': last_message.content,
-        #         'timestamp': last_message.timestamp,
-        #         'sender_id': last_message.sender.id
-        #     }
+    def get_last_message(self, obj):
+        last_message = Message.objects.filter(room=obj).order_by('-timestamp').first()
+        if last_message:
+            return {
+                'id': last_message.id,
+                'text': last_message.content,
+                'timestamp': last_message.timestamp,
+                'sender': last_message.sender.username
+            }
         return None
 
     def get_unread_count(self, obj: ChatRoom):

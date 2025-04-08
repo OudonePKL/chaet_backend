@@ -16,21 +16,13 @@ class ChatRoom(models.Model):
     members = models.ManyToManyField(User, through='Membership', related_name='chat_rooms')
 
     class Meta:
-        constraints = [
-            models.UniqueConstraint(
-                fields=['type'],
-                condition=Q(type='direct'),
-                name='unique_direct_chat_type'  # Note: this doesn't enforce per-user uniqueness
-            ),
-        ]
+        constraints = []
+
 
     def __str__(self):
         if self.type == 'direct':
-            try:
-                other_user = self.members.exclude(id=self._current_user_id).first()
-                return f"Direct chat with {other_user.username}" if other_user else "Direct Chat"
-            except:
-                return "Direct Chat"
+            other_user = self.members.exclude(id=getattr(self, '_current_user_id', None)).first()
+            return f"Direct chat with {other_user.username}" if other_user else "Direct Chat"
         return self.name or f"Group Chat {self.id}"
 
     def save(self, *args, **kwargs):
