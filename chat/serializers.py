@@ -48,14 +48,16 @@ class ChatRoomSerializer(serializers.ModelSerializer):
         last_message = getattr(obj, 'prefetched_last_message', None)
         if not last_message:
             last_message = obj.messages.order_by('-timestamp').first()
+
+        print(last_message)
         
-        if last_message:
-            return {
-                'id': last_message.id,
-                'content': last_message.content,
-                'timestamp': last_message.timestamp,
-                'sender_id': last_message.sender.id
-            }
+        # if last_message:
+        #     return {
+        #         'id': last_message.id,
+        #         'content': last_message.content,
+        #         'timestamp': last_message.timestamp,
+        #         'sender_id': last_message.sender.id
+        #     }
         return None
 
     def get_unread_count(self, obj: ChatRoom):
@@ -139,14 +141,15 @@ class MessageSerializer(serializers.ModelSerializer):
             data['attachment_url'] = None
         return data
 
-
 class MembershipSerializer(serializers.ModelSerializer):
     class Meta:
         model = Membership
-        fields = ['id', 'user', 'role']
-    
+        fields = ['id', 'user', 'role', 'room']
+        extra_kwargs = {
+            'room': {'read_only': True}
+        }
+
     def create(self, validated_data):
-        # Inject room_id from URL kwargs
         validated_data['room_id'] = self.context['view'].kwargs['room_id']
         return super().create(validated_data)
 
@@ -162,4 +165,3 @@ class MembershipSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError("Only admins can assign the admin role.")
 
         return data
-

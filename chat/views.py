@@ -217,16 +217,7 @@ class MembershipViewSet(viewsets.ModelViewSet):
         if not request.user.memberships.filter(room=room, role='admin').exists():
             return Response({"error": "Only admins can add members"}, status=403)
 
-        user_id = request.data.get("user")
-        if Membership.objects.filter(room=room, user_id=user_id).exists():
-            return Response({"error": "User is already a member of this room"}, status=400)
-
         return super().create(request, *args, **kwargs)
-
-    
-    def perform_create(self, serializer):
-        room = get_object_or_404(ChatRoom.objects.filter(members=self.request.user), pk=self.kwargs['room_id'])
-        serializer.save(room=room)
 
     @action(detail=False, methods=['delete'])
     def remove_self(self, request, room_id):
