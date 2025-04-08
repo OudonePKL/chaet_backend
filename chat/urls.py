@@ -8,12 +8,11 @@ from .views import (
     MembershipViewSet,
     DirectChatView,
     MarkMessagesReadView,
-    ReactionViewSet
 )
 
 router = DefaultRouter()
 router.register(r'rooms/(?P<room_id>\d+)/members', MembershipViewSet, basename='membership')
-router.register(r'messages/(?P<message_id>\d+)/reactions', ReactionViewSet, basename='reaction')
+
 
 urlpatterns = [
     # Chat Rooms

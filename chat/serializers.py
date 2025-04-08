@@ -1,6 +1,5 @@
 from rest_framework import serializers
-from .models import ChatRoom, Message, Membership, Reaction
-from django.db import models, IntegrityError
+from .models import ChatRoom, Message, Membership
 from users.serializers import UserSerializer
 
 
@@ -110,14 +109,13 @@ class ChatRoomCreateSerializer(serializers.ModelSerializer):
 class MessageSerializer(serializers.ModelSerializer):
     sender = UserSerializer(read_only=True)
     attachment_url = serializers.SerializerMethodField()
-    reactions = serializers.SerializerMethodField()  # New field
     is_deleted = serializers.SerializerMethodField()  # New field
 
     class Meta:
         model = Message
         fields = [
             'id', 'room', 'sender', 'content', 'timestamp',
-            'attachment_url', 'attachment_type', 'reactions',
+            'attachment_url', 'attachment_type',
             'status', 'is_deleted'
         ]
         read_only_fields = ['timestamp', 'sender']
@@ -130,12 +128,6 @@ class MessageSerializer(serializers.ModelSerializer):
                 return request.build_absolute_uri(url)
             return url
         return None
-
-    def get_reactions(self, obj):
-        """Return emoji counts like {'👍': 3, '❤️': 1}"""
-        return obj.reactions.values('emoji').annotate(
-            count=models.Count('emoji')
-        ).order_by('-count')
 
     def get_is_deleted(self, obj):
         return obj.deleted_at is not None
@@ -188,17 +180,3 @@ class MembershipSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError("Only admins can assign admin role")
         
         return data
-
-class ReactionSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Reaction
-        fields = ['id', 'emoji', 'created_at']  # Removed message/user as they're auto-set
-        read_only_fields = ['created_at']
-
-    def create(self, validated_data):
-        return Reaction.objects.create(
-            message=self.context['message'],
-            user=self.context['request'].user,
-            **validated_data
-        )
-

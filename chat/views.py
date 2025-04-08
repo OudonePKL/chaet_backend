@@ -2,24 +2,22 @@ from django.shortcuts import render, get_object_or_404
 from rest_framework import generics, status, viewsets
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.permissions import IsAuthenticated
 from .permissions import IsMessageOwner
-from django.db.models import Q, Prefetch, Max
+from django.db.models import Q, Prefetch
 from django.db import transaction
 from rest_framework.throttling import ScopedRateThrottle
 from django_filters.rest_framework import DjangoFilterBackend
-from .models import ChatRoom, Message, Membership, Reaction
+from .models import ChatRoom, Message, Membership
 from users.models import User
 from .serializers import (
     ChatRoomSerializer,
     ChatRoomCreateSerializer,
     MessageSerializer,
-    MembershipSerializer,
-    ReactionSerializer,
+    MembershipSerializer
 )
 from users.serializers import UserSerializer
 import redis
-from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied
 from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
@@ -30,7 +28,7 @@ from rest_framework.decorators import action
 import django_filters
 from django.db.models import Prefetch, Count
 from rest_framework.pagination import PageNumberPagination, CursorPagination
-
+from rest_framework.decorators import action
 
 
 # Initialize Redis connection
@@ -181,8 +179,6 @@ class MessageListView(generics.ListCreateAPIView):
             deleted_at__isnull=True
         ).select_related(
             'sender', 'room'
-        ).prefetch_related(
-            Prefetch('reactions', queryset=Reaction.objects.select_related('user'))
         ).order_by('-timestamp')
 
 
@@ -412,7 +408,6 @@ class DirectChatView(generics.GenericAPIView):
             status=status.HTTP_201_CREATED
         )
 
-
 class MarkMessagesReadView(generics.GenericAPIView):
     permission_classes = [IsAuthenticated]
     
@@ -433,21 +428,3 @@ class MarkMessagesReadView(generics.GenericAPIView):
             'status': 'success',
             'messages_marked_read': count
         })
-    
-class ReactionViewSet(viewsets.ModelViewSet):
-    serializer_class = ReactionSerializer
-    permission_classes = [IsAuthenticated]
-
-    def get_queryset(self):
-        return Reaction.objects.filter(
-            message_id=self.kwargs['message_id'],
-            message__room__members=self.request.user
-        )
-
-    def get_serializer_context(self):
-        context = super().get_serializer_context()
-        context['message'] = get_object_or_404(
-            Message.objects.filter(room__members=self.request.user),
-            pk=self.kwargs['message_id']
-        )
-        return context

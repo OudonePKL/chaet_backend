@@ -2,7 +2,6 @@ from django.db import models
 from django.utils import timezone
 from django.db.models import Q
 from users.models import User
-from django.core.exceptions import ValidationError
 
 class ChatRoom(models.Model):
     name = models.CharField(max_length=255, null=True, blank=True)
@@ -104,18 +103,3 @@ class Message(models.Model):
         if self.attachment:
             return self.attachment.url
         return None
-
-class Reaction(models.Model):
-    message = models.ForeignKey(Message, on_delete=models.CASCADE, related_name='reactions')
-    user = models.ForeignKey(User, on_delete=models.CASCADE)
-    emoji = models.CharField(max_length=10)  # Consider using EmojiField if needed
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        unique_together = ('message', 'user', 'emoji')
-
-    def clean(self):
-        # Add emoji validation if needed
-        if not self.emoji:
-            raise ValidationError("Emoji is required")
-        super().clean()
