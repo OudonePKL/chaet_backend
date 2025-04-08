@@ -4,10 +4,10 @@ from users.serializers import UserSerializer
 
 
 class ChatRoomSerializer(serializers.ModelSerializer):
-    members = serializers.SerializerMethodField()  # Custom handling
+    members = serializers.SerializerMethodField()
     last_message = serializers.SerializerMethodField()
     unread_count = serializers.SerializerMethodField()
-    my_membership = serializers.SerializerMethodField()  # New field
+    my_membership = serializers.SerializerMethodField()
 
     class Meta:
         model = ChatRoom
@@ -17,8 +17,7 @@ class ChatRoomSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['created_at']
 
-    def get_members(self, obj):
-        """Optimized member serialization with prefetch_related"""
+    def get_members(self, obj: ChatRoom):
         memberships = obj.memberships.select_related('user').all()
         return [
             {
@@ -30,13 +29,13 @@ class ChatRoomSerializer(serializers.ModelSerializer):
             for m in memberships
         ]
 
-    def get_my_membership(self, obj):
-        """Show current user's role in the chat"""
+    def get_my_membership(self, obj: ChatRoom):
         request = self.context.get('request')
-        if not request or not request.user.is_authenticated:
+        user = getattr(request, 'user', None)
+        if not user or not user.is_authenticated:
             return None
         
-        membership = obj.memberships.filter(user=request.user).first()
+        membership = obj.memberships.filter(user=user).first()
         if membership:
             return {
                 'role': membership.role,
@@ -45,8 +44,7 @@ class ChatRoomSerializer(serializers.ModelSerializer):
             }
         return None
 
-    def get_last_message(self, obj):
-        """Use prefetched data if available"""
+    def get_last_message(self, obj: ChatRoom):
         last_message = getattr(obj, 'prefetched_last_message', None)
         if not last_message:
             last_message = obj.messages.order_by('-timestamp').first()
@@ -60,13 +58,12 @@ class ChatRoomSerializer(serializers.ModelSerializer):
             }
         return None
 
-    def get_unread_count(self, obj):
-        user = self.context['request'].user
-        return obj.messages.exclude(
-            sender=user
-        ).exclude(
-            read_by=user
-        ).count()
+    def get_unread_count(self, obj: ChatRoom):
+        request = self.context.get('request')
+        user = getattr(request, 'user', None)
+        if not user or not user.is_authenticated:
+            return 0
+        return obj.messages.exclude(sender=user).exclude(read_by=user).count()
 
 class ChatRoomCreateSerializer(serializers.ModelSerializer):
     class Meta:
@@ -74,33 +71,38 @@ class ChatRoomCreateSerializer(serializers.ModelSerializer):
         fields = ['name', 'type', 'members']
 
     def validate(self, data):
-        if data.get('type') == 'group' and not data.get('name'):
-            raise serializers.ValidationError("Group chat must have a name")
-        if data.get('type') == 'group' and data.get('name'):
-            # Check if a group with this name already exists
-            if ChatRoom.objects.filter(name=data['name'], type='group').exists():
-                raise serializers.ValidationError("A group with this name already exists")
-        
-        # Ensure at least one member is added
-        members_data = self.initial_data.get('members', [])
-        if not members_data or len(members_data) < 1:
-            raise serializers.ValidationError("A group chat must have at least one other user.")
+        chat_type = data.get('type')
+        name = data.get('name')
+
+        if chat_type == 'group':
+            if not name:
+                raise serializers.ValidationError("Group chat must have a name.")
+            if ChatRoom.objects.filter(name=name, type='group').exists():
+                raise serializers.ValidationError("A group with this name already exists.")
+
+        members = self.initial_data.get('members', [])
+        if not members or len(members) < 1:
+            raise serializers.ValidationError("At least one member must be added.")
 
         return data
 
     def create(self, validated_data):
         members_data = self.initial_data.get('members', [])
-        request_user = self.context['request'].user
-        # Ensure at least one member is added besides the creator
-        if not members_data or request_user.id in members_data:
+        request = self.context.get('request')
+        user = getattr(request, 'user', None)
+
+        if not user or not user.is_authenticated:
+            raise serializers.ValidationError("Authentication required.")
+
+        if not members_data or user.id in members_data:
             raise serializers.ValidationError("You must add at least one other user.")
 
         chat_room = ChatRoom.objects.create(**validated_data)
 
-        # Add the creator as an admin
-        Membership.objects.create(user=request_user, room=chat_room, role='admin')
+        # Add creator as admin
+        Membership.objects.create(user=user, room=chat_room, role='admin')
 
-        # Add other members
+        # Add others
         for user_id in members_data:
             Membership.objects.create(user_id=user_id, room=chat_room, role='member')
 
@@ -109,7 +111,7 @@ class ChatRoomCreateSerializer(serializers.ModelSerializer):
 class MessageSerializer(serializers.ModelSerializer):
     sender = UserSerializer(read_only=True)
     attachment_url = serializers.SerializerMethodField()
-    is_deleted = serializers.SerializerMethodField()  # New field
+    is_deleted = serializers.SerializerMethodField()
 
     class Meta:
         model = Message
@@ -120,63 +122,44 @@ class MessageSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['timestamp', 'sender']
 
-    def get_attachment_url(self, obj):
-        if obj.attachment:
-            request = self.context.get('request')
-            url = obj.attachment.url
-            if request:
-                return request.build_absolute_uri(url)
-            return url
-        return None
+    def get_attachment_url(self, obj: Message):
+        if not obj.attachment:
+            return None
+        request = self.context.get('request')
+        url = obj.attachment.url
+        return request.build_absolute_uri(url) if request else url
 
-    def get_is_deleted(self, obj):
-        return obj.deleted_at is not None
+    def get_is_deleted(self, obj: Message):
+        return obj.is_deleted()
 
-    def to_representation(self, instance):
-        """Hide content if message is deleted"""
+    def to_representation(self, instance: Message):
         data = super().to_representation(instance)
-        if instance.deleted_at:
+        if instance.is_deleted():
             data['content'] = "[This message was deleted]"
             data['attachment_url'] = None
         return data
 
-class MembershipSerializer(serializers.ModelSerializer):
-    user = UserSerializer(read_only=True)
-    user_id = serializers.IntegerField(write_only=True)
-    can_edit = serializers.SerializerMethodField()  # New field
 
+class MembershipSerializer(serializers.ModelSerializer):
     class Meta:
         model = Membership
-        fields = [
-            'id', 'room', 'user', 'user_id', 'role',
-            'joined_at', 'last_role_change', 'can_edit'
-        ]
-        read_only_fields = ['joined_at', 'room']
-
-    def get_can_edit(self, obj):
-        """Only admins can modify roles"""
-        request = self.context.get('request')
-        if not request:
-            return False
-        return obj.room.memberships.filter(
-            user=request.user,
-            role='admin'
-        ).exists()
+        fields = ['id', 'user', 'role']
+    
+    def create(self, validated_data):
+        # Inject room_id from URL kwargs
+        validated_data['room_id'] = self.context['view'].kwargs['room_id']
+        return super().create(validated_data)
 
     def validate(self, data):
-        """Prevent non-admins from assigning admin role"""
         request = self.context.get('request')
-        if 'role' in data and data['role'] == 'admin':
-            if not request or not request.user.is_authenticated:
-                raise serializers.ValidationError("Authentication required")
+        user = getattr(request, 'user', None)
+
+        if data.get('role') == 'admin':
+            if not user or not user.is_authenticated:
+                raise serializers.ValidationError("Authentication required to assign admin role.")
             
-            is_admin = Membership.objects.filter(
-                room=data.get('room'),
-                user=request.user,
-                role='admin'
-            ).exists()
-            
-            if not is_admin:
-                raise serializers.ValidationError("Only admins can assign admin role")
-        
+            if not Membership.objects.filter(room=data.get('room'), user=user, role='admin').exists():
+                raise serializers.ValidationError("Only admins can assign the admin role.")
+
         return data
+

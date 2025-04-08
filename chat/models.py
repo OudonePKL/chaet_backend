@@ -3,77 +3,88 @@ from django.utils import timezone
 from django.db.models import Q
 from users.models import User
 
+
 class ChatRoom(models.Model):
+    TYPE_CHOICES = [
+        ('direct', 'Direct'),
+        ('group', 'Group'),
+    ]
+
     name = models.CharField(max_length=255, null=True, blank=True)
-    type = models.CharField(
-        max_length=10,
-        choices=[('direct', 'Direct'), ('group', 'Group')],
-        default='direct'
-    )
-    created_at = models.DateTimeField(default=timezone.now)
+    type = models.CharField(max_length=10, choices=TYPE_CHOICES, default='direct')
+    created_at = models.DateTimeField(auto_now_add=True)
     members = models.ManyToManyField(User, through='Membership', related_name='chat_rooms')
 
     class Meta:
         constraints = [
-            # Prevent duplicate direct chats between same users
             models.UniqueConstraint(
                 fields=['type'],
                 condition=Q(type='direct'),
-                name='unique_direct_chat_per_user_pair'
-            )
+                name='unique_direct_chat_type'  # Note: this doesn't enforce per-user uniqueness
+            ),
         ]
 
     def __str__(self):
         if self.type == 'direct':
-            other_user = self.members.exclude(id=self.get_other_member_id()).first()
-            return f"Direct chat with {other_user.username}"
+            try:
+                other_user = self.members.exclude(id=self._current_user_id).first()
+                return f"Direct chat with {other_user.username}" if other_user else "Direct Chat"
+            except:
+                return "Direct Chat"
         return self.name or f"Group Chat {self.id}"
 
     def save(self, *args, **kwargs):
         if self.type == 'direct':
-            self.name = None  # Direct chats shouldn't have names
+            self.name = None
         elif not self.name:
             raise ValueError("Group chats must have a name")
         super().save(*args, **kwargs)
 
-    def get_other_member_id(self, user=None):
-        """For direct chats, get the other member's ID"""
+    def get_other_member_id(self, user):
+        """
+        For direct chats, get the other member's ID, excluding the provided user.
+        """
         if self.type != 'direct':
             return None
-        user = user or self.context.get('request').user
-        return self.members.exclude(id=user.id).first().id
+        other = self.members.exclude(id=user.id).first()
+        return other.id if other else None
+
 
 class Membership(models.Model):
+    ROLE_CHOICES = [
+        ('admin', 'Admin'),
+        ('member', 'Member'),
+    ]
+
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="memberships")
     room = models.ForeignKey(ChatRoom, on_delete=models.CASCADE, related_name="memberships")
-    role = models.CharField(
-        max_length=10,
-        choices=[('admin', 'Admin'), ('member', 'Member')],
-        default='member'
-    )
-    joined_at = models.DateTimeField(default=timezone.now)
+    role = models.CharField(max_length=10, choices=ROLE_CHOICES, default='member')
+    joined_at = models.DateTimeField(auto_now_add=True)
     last_role_change = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         unique_together = ('user', 'room')
 
     def save(self, *args, **kwargs):
-        if self.pk:  # Only update last_role_change if role is being updated
+        if self.pk:
             original = Membership.objects.get(pk=self.pk)
             if original.role != self.role:
                 self.last_role_change = timezone.now()
         super().save(*args, **kwargs)
 
+
 class Message(models.Model):
+    STATUS_CHOICES = [
+        ('sending', 'Sending'),
+        ('delivered', 'Delivered'),
+        ('seen', 'Seen'),
+    ]
+
     content = models.TextField()
     sender = models.ForeignKey(User, on_delete=models.CASCADE, related_name='sent_messages')
     room = models.ForeignKey(ChatRoom, on_delete=models.CASCADE, related_name='messages')
     timestamp = models.DateTimeField(default=timezone.now, db_index=True)
-    status = models.CharField(
-        max_length=10,
-        choices=[('sending', 'Sending'), ('delivered', 'Delivered'), ('seen', 'Seen')],
-        default='sending'
-    )
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='sending')
     deleted_at = models.DateTimeField(null=True, blank=True)
     read_by = models.ManyToManyField(User, related_name='read_messages', blank=True)
     attachment = models.FileField(upload_to='message_attachments/%Y/%m/%d/', null=True, blank=True)
@@ -100,6 +111,4 @@ class Message(models.Model):
         return self.deleted_at is not None
 
     def get_attachment_url(self):
-        if self.attachment:
-            return self.attachment.url
-        return None
+        return self.attachment.url if self.attachment else None
