@@ -72,7 +72,7 @@ INSTALLED_APPS = [
     'corsheaders',
     'channels',
     'users',
-    'chat',
+    'chat.apps.ChatConfig',
     'drf_yasg',
 ]
 
