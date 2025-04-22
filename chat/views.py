@@ -26,6 +26,8 @@ from .serializers import (
     ChatRoomCreateSerializer,
     MessageSerializer,
     MembershipSerializer,
+    MembershipWriteSerializer,
+    MembershipReadSerializer,
 )
 from .permissions import IsMessageOwner
 from users.models import User
@@ -200,10 +202,11 @@ class MessageDetailView(generics.RetrieveUpdateDestroyAPIView):
             raise PermissionDenied("Cannot edit deleted messages")
         serializer.save()
 
-
 class MembershipViewSet(viewsets.ModelViewSet):
-    permission_classes = [IsAuthenticated]
-    serializer_class = MembershipSerializer
+    def get_serializer_class(self):
+        if self.action in ['create', 'update', 'partial_update']:
+            return MembershipWriteSerializer
+        return MembershipReadSerializer
 
     def get_queryset(self):
         return Membership.objects.filter(
@@ -218,6 +221,17 @@ class MembershipViewSet(viewsets.ModelViewSet):
             return Response({"error": "Only admins can add members"}, status=403)
 
         return super().create(request, *args, **kwargs)
+
+    def perform_create(self, serializer):
+        serializer.save(room_id=self.kwargs['room_id'])
+
+    def update(self, request, *args, **kwargs):
+        room = get_object_or_404(ChatRoom.objects.filter(members=request.user), pk=self.kwargs['room_id'])
+        
+        if not request.user.memberships.filter(room=room, role='admin').exists():
+            return Response({"error": "Only admins can update member roles"}, status=403)
+            
+        return super().update(request, *args, **kwargs)
 
     @action(detail=False, methods=['delete'])
     def remove_self(self, request, room_id):
@@ -235,7 +249,6 @@ class MembershipViewSet(viewsets.ModelViewSet):
 
             membership.delete()
             return Response({"detail": "Successfully left the room"}, status=200)
-
 
 class UserSearchView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]

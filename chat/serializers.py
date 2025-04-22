@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from .models import ChatRoom, Message, Membership
 from users.serializers import UserSerializer
-
+from users.models import User
 
 class ChatRoomSerializer(serializers.ModelSerializer):
     members = serializers.SerializerMethodField()
@@ -136,7 +136,9 @@ class MessageSerializer(serializers.ModelSerializer):
             data['attachment_url'] = None
         return data
 
+
 class MembershipSerializer(serializers.ModelSerializer):
+    user = UserSerializer(read_only=True)
     class Meta:
         model = Membership
         fields = ['id', 'user', 'role', 'room']
@@ -160,3 +162,24 @@ class MembershipSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError("Only admins can assign the admin role.")
 
         return data
+
+
+class MembershipWriteSerializer(serializers.ModelSerializer):
+    user = serializers.PrimaryKeyRelatedField(queryset=User.objects.all())
+    
+    class Meta:
+        model = Membership
+        fields = ['id', 'user', 'role', 'room']
+        extra_kwargs = {
+            'room': {'read_only': True}
+        }
+
+class MembershipReadSerializer(serializers.ModelSerializer):
+    user = UserSerializer(read_only=True)
+    
+    class Meta:
+        model = Membership
+        fields = ['id', 'user', 'role', 'room']
+        extra_kwargs = {
+            'room': {'read_only': True}
+        }
