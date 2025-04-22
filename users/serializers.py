@@ -6,6 +6,7 @@ from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from .constants import ERROR_MESSAGES
 from .utils import is_user_online 
 
+
 User = get_user_model()
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
@@ -74,8 +75,8 @@ class UserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ('id', 'username', 'email', 'password', 'password2', 'profile_pic', 'status', 'last_seen', 'created_at', 'is_online')
-        read_only_fields = ('status', 'last_seen', 'created_at', 'is_online')
+        fields = ('id', 'username', 'email', 'password', 'password2', 'profile_pic', 'created_at', 'is_online')
+        read_only_fields = ('created_at', 'is_online')
 
     def validate(self, attrs):
         if attrs['password'] != attrs.pop('password2'):
