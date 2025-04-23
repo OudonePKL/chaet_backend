@@ -102,8 +102,8 @@ class UserUpdateSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = User
-        fields = ('username', 'email', 'profile_pic')
-        read_only_fields = ('email',)
+        fields = ('id', 'username', 'email', 'profile_pic')
+        read_only_fields = ('id', 'email')
 
     def update(self, instance, validated_data):
         # Handle profile pic update

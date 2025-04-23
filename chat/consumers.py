@@ -90,11 +90,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
             
             logger.info(f"User {self.user.username} attempting to connect to room {self.room_id}")
             
-            # Join room group
-            await self.channel_layer.group_add(
-                self.room_group_name,
-                self.channel_name
-            )
+            # Add Redis connection error handling
+            try:
+                await self.channel_layer.group_add(
+                    self.room_group_name,
+                    self.channel_name
+                )
+            except ConnectionError as e:
+                logger.error(f"Redis connection error: {str(e)}")
+                await self.close(code=4002)
+                return
             
             # Accept the connection
             await self.accept()

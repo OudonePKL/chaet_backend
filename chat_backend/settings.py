@@ -30,34 +30,6 @@ SECRET_KEY = os.getenv('DJANGO_SECRET_KEY')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-if DEBUG == True:
-    ALLOWED_HOSTS = ['*']
-
-    # Database
-    DATABASES = {
-        'default': {
-            'ENGINE': 'django.db.backends.sqlite3',
-            'NAME': BASE_DIR / 'db.sqlite3',
-        }
-    }
-
-else:
-    ALLOWED_HOSTS = ["localhost", "127.0.0.1", "192.168.100.100"]
-
-    # Database
-    DATABASES = {
-        'default': {
-            'ENGINE': 'django.db.backends.postgresql',
-            'NAME': os.getenv('DB_NAME'),
-            'USER': os.getenv('DB_USER'),
-            'PASSWORD': os.getenv('DB_PASSWORD'),
-            'HOST': os.getenv('DB_HOST', 'localhost'),
-            'PORT': os.getenv('DB_PORT', '5432'),
-        }
-    }
-
-
-
 # Application definition
 
 INSTALLED_APPS = [
@@ -184,13 +156,6 @@ REST_FRAMEWORK = {
     'PAGE_SIZE': 20
 }
 
-# JWT settings
-# SIMPLE_JWT = {
-#     'ACCESS_TOKEN_LIFETIME': timedelta(minutes=120),
-#     'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
-#     'ROTATE_REFRESH_TOKENS': True,
-#     'BLACKLIST_AFTER_ROTATION': True,
-# }
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(minutes=60),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
@@ -211,33 +176,81 @@ REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
 REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))
 REDIS_DB = int(os.getenv('REDIS_DB', 0))
 
-# CORS settings
-CORS_ALLOW_CREDENTIALS = True
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:8000",
-    "http://127.0.0.1:8000",
-    "http://localhost:3000",
-    "http://localhost:5173",
-    "http://192.168.100.100",
-    "http://192.168.100.100:8000",  
-]
-CSRF_TRUSTED_ORIGINS = ["http://localhost:3000", "http://localhost:5173"]
+# CORS and Host settings based on environment
+if DEBUG:
+    ALLOWED_HOSTS = ['*']
+    CORS_ALLOWED_ORIGINS = [
+        "http://localhost:8000",
+        "http://localhost:3000",
+        "http://127.0.0.1:8000",
+        "http://127.0.0.1:3000",
+        "ws://localhost:8000",
+        "ws://127.0.0.1:8000"
+    ]
+    CSRF_TRUSTED_ORIGINS = [
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173"
+    ]
+    REDIS_HOST = 'localhost'
+    CHANNEL_SECURITY = {
+        'ALLOWED_HOSTS': ['localhost', '127.0.0.1'],
+        'ALLOWED_ORIGINS': ['*'],
+    }
+    # Email settings
+    EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 
+    # Database
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db.sqlite3',
+        }
+    }
+else:
+    ALLOWED_HOSTS = ["localhost", "127.0.0.1", "192.168.100.100"]
+    CORS_ALLOWED_ORIGINS = [
+        "http://192.168.100.100",
+        "http://192.168.100.100:8000",
+        "http://192.168.100.100:3000",
+        "ws://192.168.100.100:8000"
+    ]
+    CSRF_TRUSTED_ORIGINS = [
+        "http://192.168.100.100:3000",
+        "http://192.168.100.100:5173"
+    ]
+    REDIS_HOST = '192.168.100.100'
+    CHANNEL_SECURITY = {
+        'ALLOWED_HOSTS': ['192.168.100.100'],
+        'ALLOWED_ORIGINS': ['*'],
+    }
+    # Email settings
+    EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+    EMAIL_HOST = os.getenv('EMAIL_HOST', 'smtp.gmail.com')
+    EMAIL_PORT = int(os.getenv('EMAIL_PORT', 587))
+    EMAIL_USE_TLS = True
+    EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER')
+    EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD')
 
-# Email settings
-EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-EMAIL_HOST = os.getenv('EMAIL_HOST', 'smtp.gmail.com')
-EMAIL_PORT = int(os.getenv('EMAIL_PORT', 587))
-EMAIL_USE_TLS = os.getenv('EMAIL_USE_TLS', 'True') == 'True'
-EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
-EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '')
+    # Database
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': os.getenv('DB_NAME'),
+            'USER': os.getenv('DB_USER'),
+            'PASSWORD': os.getenv('DB_PASSWORD'),
+            'HOST': os.getenv('DB_HOST', 'localhost'),
+            'PORT': os.getenv('DB_PORT', '5432'),
+        }
+    }
 
-# Channel layers
+# Update Channel Layers configuration to use the environment-specific REDIS_HOST
 CHANNEL_LAYERS = {
     'default': {
         'BACKEND': 'channels_redis.core.RedisChannelLayer',
         'CONFIG': {
-            "hosts": [('127.0.0.1', 6379)],
+            "hosts": [(REDIS_HOST, 6379)],
         },
     },
 }
@@ -245,7 +258,7 @@ CHANNEL_LAYERS = {
 
 # WebSocket settings
 CHANNEL_SECURITY = {
-    'ALLOWED_HOSTS': ['*'],
+    'ALLOWED_HOSTS': ['192.168.100.100'],
     'ALLOWED_ORIGINS': ['*'],
 }
 
