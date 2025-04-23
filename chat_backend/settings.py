@@ -161,8 +161,8 @@ SIMPLE_JWT = {
     'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
     'ROTATE_REFRESH_TOKENS': False,
     'BLACKLIST_AFTER_ROTATION': True,
-    'ALGORITHM': 'HS256',
-    'SIGNING_KEY': SECRET_KEY,
+    'ALGORITHM': os.getenv('JWT_ALGORITHM', 'HS256'),
+    'SIGNING_KEY': os.getenv('JWT_SECRET_KEY', SECRET_KEY),  # Uses JWT_SECRET_KEY from .env, falls back to Django's SECRET_KEY
     'VERIFYING_KEY': None,
     'AUTH_HEADER_TYPES': ('Bearer',),
     'USER_ID_FIELD': 'id',
@@ -214,15 +214,23 @@ else:
         "http://192.168.100.100",
         "http://192.168.100.100:8000",
         "http://192.168.100.100:3000",
-        "ws://192.168.100.100:8000"
+        "ws://192.168.100.100:8000",
+
+        "http://localhost:8000",
+        "http://localhost:3000",
+        "http://127.0.0.1:8000",
+        "http://127.0.0.1:3000",
+        "ws://localhost:8000",
+        "ws://127.0.0.1:8000"
     ]
     CSRF_TRUSTED_ORIGINS = [
         "http://192.168.100.100:3000",
-        "http://192.168.100.100:5173"
+        "http://192.168.100.100:5173",
+        "http://localhost:3000",
     ]
     REDIS_HOST = '192.168.100.100'
     CHANNEL_SECURITY = {
-        'ALLOWED_HOSTS': ['192.168.100.100'],
+        'ALLOWED_HOSTS': ['192.168.100.100', "http://localhost:3000"],
         'ALLOWED_ORIGINS': ['*'],
     }
     # Email settings
