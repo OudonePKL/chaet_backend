@@ -1,7 +1,7 @@
 import json
 import logging
 from asgiref.sync import sync_to_async
-from channels.generic.websocket import AsyncWebsocketConsumer
+from channels.generic.websocket import AsyncWebsocketConsumer, AsyncJsonWebsocketConsumer
 from django.utils import timezone
 from django.contrib.auth.models import AnonymousUser
 from .models import ChatRoom, Message, Membership
@@ -90,16 +90,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
             
             logger.info(f"User {self.user.username} attempting to connect to room {self.room_id}")
             
-            # Add Redis connection error handling
-            try:
-                await self.channel_layer.group_add(
-                    self.room_group_name,
-                    self.channel_name
-                )
-            except ConnectionError as e:
-                logger.error(f"Redis connection error: {str(e)}")
-                await self.close(code=4002)
-                return
+            # Join room group
+            await self.channel_layer.group_add(
+                self.room_group_name,
+                self.channel_name
+            )
             
             # Accept the connection
             await self.accept()
@@ -319,3 +314,64 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 'type': 'error',
                 'message': str(e)
             }))
+
+class NotificationConsumer(AsyncJsonWebsocketConsumer):
+    async def connect(self):
+        self.user = self.scope['user']
+
+        if isinstance(self.user, AnonymousUser):
+            await self.close(code=4001)
+            return
+
+        self.group_name = f'notifications_{self.user.id}'
+
+        # Join user-specific notification group
+        await self.channel_layer.group_add(
+            self.group_name,
+            self.channel_name
+        )
+
+        await self.accept()
+        logger.info(f"User {self.user.username} connected to NotificationConsumer")
+
+    async def disconnect(self, close_code):
+        if hasattr(self, 'group_name'):
+            await self.channel_layer.group_discard(
+                self.group_name,
+                self.channel_name
+            )
+            logger.info(f"User {self.user.username} disconnected from NotificationConsumer")
+
+    async def receive_json(self, content):
+        # Optional: Handle client pings or request actions here
+        action = content.get("action")
+        if action == "ping":
+            await self.send_json({
+                "type": "pong",
+                "timestamp": timezone.now().isoformat()
+            })
+
+    async def send_notification(self, event):
+        """
+        Handler for notification messages sent via channel layer.
+        Example usage from signal or backend:
+            channel_layer.group_send(
+                f'notifications_{user_id}',
+                {
+                    'type': 'send.notification',
+                    'event': 'new_message',
+                    'room_id': 1,
+                    'message_id': 5,
+                    'message': 'You have a new message',
+                    'timestamp': '2024-01-01T12:00:00Z'
+                }
+            )
+        """
+        await self.send_json({
+            "type": "notification",
+            "event": event.get("event"),
+            "room_id": event.get("room_id"),
+            "message_id": event.get("message_id"),
+            "message": event.get("message"),
+            "timestamp": event.get("timestamp")
+        })
