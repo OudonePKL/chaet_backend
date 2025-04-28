@@ -28,7 +28,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = os.getenv('DJANGO_SECRET_KEY')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.getenv('DEBUG', 'False') == 'False'
 
 if DEBUG == True:
     ALLOWED_HOSTS = ['*']
@@ -207,9 +207,11 @@ SIMPLE_JWT = {
 
 
 # Redis settings
-REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
-REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))
-REDIS_DB = int(os.getenv('REDIS_DB', 0))
+REDIS_CONFIG = {
+    'host': os.getenv('REDIS_HOST', 'localhost'),
+    'port': int(os.getenv('REDIS_PORT', 6379)),
+    'db': int(os.getenv('REDIS_DB', 0)),
+}
 
 # CORS settings
 CORS_ALLOW_CREDENTIALS = True
@@ -246,8 +248,8 @@ CHANNEL_LAYERS = {
 
 # WebSocket settings
 CHANNEL_SECURITY = {
-    'ALLOWED_HOSTS': ['*'],
-    'ALLOWED_ORIGINS': ['*'],
+    'ALLOWED_HOSTS': ALLOWED_HOSTS,
+    'ALLOWED_ORIGINS': CORS_ALLOWED_ORIGINS,
 }
 
 SWAGGER_SETTINGS = {
