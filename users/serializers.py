@@ -4,7 +4,8 @@ from .models import User
 from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from .constants import ERROR_MESSAGES
-from .utils import is_user_online 
+from .utils import is_user_online
+from django.conf import settings
 
 User = get_user_model()
 

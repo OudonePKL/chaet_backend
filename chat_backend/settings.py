@@ -14,6 +14,7 @@ from pathlib import Path
 from datetime import timedelta
 import os
 from dotenv import load_dotenv
+from urllib.parse import urljoin
 
 load_dotenv()
 
@@ -147,6 +148,16 @@ STATIC_URL = 'static/'
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+
+# Add this new setting for the full media URL
+if not DEBUG:
+    MEDIA_HOST = f"http://192.168.100.100:8000"
+else:
+    MEDIA_HOST = "http://localhost:8000"
+
+# Function to get full media URL
+def get_media_url(request=None):
+    return urljoin(MEDIA_HOST, MEDIA_URL.lstrip('/'))
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.0/ref/settings/#default-auto-field
