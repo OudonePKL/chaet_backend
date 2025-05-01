@@ -9,6 +9,10 @@ def send_message_notification(sender, instance, created, **kwargs):
     if created:
         channel_layer = get_channel_layer()
         room_id = instance.room.id
+        
+        # Log for debugging
+        print(f"Message created: {instance.id} in room {room_id} by {instance.sender.username}")
+        
         data = {
             'type': 'new_message',
             'message': {
@@ -23,6 +27,9 @@ def send_message_notification(sender, instance, created, **kwargs):
             f"chatroom_{room_id}",
             data
         )
+        
+        # Send notifications to other users in the room
+        send_notification_to_users(instance.room, instance)
 
 def send_notification_to_users(room, message):
     members = room.members.exclude(id=message.sender.id)
@@ -30,16 +37,14 @@ def send_notification_to_users(room, message):
 
     for member in members:
         async_to_sync(channel_layer.group_send)(
-            f"user_{member.id}",
+            f"notifications_{member.id}",  # Match the group name in NotificationConsumer
             {
-                "type": "notify",
-                "payload": {
-                    "type": "new_message",
-                    "room_id": room.id,
-                    "message_id": message.id,
-                    "message": message.content,
-                    "sender": message.sender.username,
-                    "timestamp": str(message.timestamp),
-                },
+                "type": "send_notification",  # Match the handler method in NotificationConsumer
+                "event": "new_message",
+                "room_id": room.id,
+                "message_id": message.id,
+                "message": message.content,
+                "sender": message.sender.username,
+                "timestamp": str(message.timestamp),
             },
         )
