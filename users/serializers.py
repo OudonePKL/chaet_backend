@@ -72,6 +72,8 @@ class UserSerializer(serializers.ModelSerializer):
 
     is_online = serializers.SerializerMethodField()
 
+    profile_pic = serializers.SerializerMethodField()
+
     class Meta:
         model = User
         fields = ('id', 'username', 'email', 'password', 'password2', 'profile_pic', 'status', 'last_seen', 'created_at', 'is_online')
@@ -95,6 +97,12 @@ class UserSerializer(serializers.ModelSerializer):
             user.profile_pic = validated_data['profile_pic']
             user.save()
         return user
+    
+    def get_profile_pic(self, obj):
+        request = self.context.get('request')
+        if obj.profile_pic and request:
+            return request.build_absolute_uri(obj.profile_pic.url)
+        return None
 
 class UserUpdateSerializer(serializers.ModelSerializer):
     profile_pic = serializers.ImageField(required=False, allow_null=True)
