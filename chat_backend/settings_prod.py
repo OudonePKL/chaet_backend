@@ -42,20 +42,52 @@ CHANNEL_LAYERS = {
 CORS_ALLOWED_ORIGINS = [
     "http://192.168.100.100:8000",
     "http://192.168.100.100:3000",
+    "http://192.168.100.100:8080",
+    "http://192.168.100.100",
     "http://localhost:8000",
-    "http://localhost:3000",
+    "http://localhost:3000"
+]
+
+CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_ALL_ORIGINS = True  # Only use in development
+CORS_ALLOW_METHODS = [
+    'DELETE',
+    'GET',
+    'OPTIONS',
+    'PATCH',
+    'POST',
+    'PUT',
 ]
 
 CSRF_TRUSTED_ORIGINS = [
     "http://192.168.100.100:8000",
     "http://192.168.100.100:3000",
+    "http://192.168.100.100:8080",
+    "http://192.168.100.100",
     "http://localhost:8000",
-    "http://localhost:3000",
+    "http://localhost:3000"
 ]
 
-# Static and Media Files
+# Static files configuration
+STATIC_URL = '/static/'
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
+STATICFILES_DIRS = [
+    os.path.join(BASE_DIR, 'static')
+]
+
+# Ensure Django serves static files even in production
+DEBUG = True  # Temporarily set to True to debug static files
+
+# Add whitenoise for static files serving
+MIDDLEWARE = [
+    'whitenoise.middleware.WhiteNoiseMiddleware',
+] + MIDDLEWARE
+
+STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
+
+# Media files configuration
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+MEDIA_HOST = "http://192.168.100.100:8000"
 
 # Logging Configuration
 LOGGING = {
