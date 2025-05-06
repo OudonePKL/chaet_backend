@@ -250,6 +250,33 @@ class MembershipViewSet(viewsets.ModelViewSet):
             membership.delete()
             return Response({"detail": "Successfully left the room"}, status=200)
 
+    @action(detail=True, methods=['delete'])
+    def remove_member(self, request, room_id, pk=None):
+        """Allow admin to remove a member from the chat room"""
+        with transaction.atomic():
+            # Check if the requesting user is an admin
+            if not request.user.memberships.filter(room_id=room_id, role='admin').exists():
+                return Response({"error": "Only admins can remove members"}, status=403)
+            
+            # Get the membership to remove
+            membership = get_object_or_404(
+                Membership.objects.select_for_update(),
+                room_id=room_id,
+                id=pk
+            )
+            
+            # Prevent removing yourself through this endpoint
+            if membership.user == request.user:
+                return Response({"error": "Use remove_self endpoint to leave the room"}, status=400)
+            
+            # Prevent removing another admin
+            if membership.role == 'admin':
+                return Response({"error": "Cannot remove another admin"}, status=403)
+            
+            # Remove the member
+            membership.delete()
+            return Response({"detail": f"Successfully removed member from the room"}, status=200)
+
 class UserSearchView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = UserSerializer
